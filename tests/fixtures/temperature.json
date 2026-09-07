@@ -1,0 +1,50 @@
+[
+  {
+    "protocol": "ruuvi",
+    "name": "Ça pique",
+    "address": "E3:EE:E4:14:FA:B0",
+    "manufacturer_id": 1177,
+    "data": "0512fc4e20c87d000100020003af1405000caabbccddeeff",
+    "expected": {
+      "temperature": 24.3,
+      "humidity": 50.0,
+      "battery_voltage": 3.0
+    }
+  },
+  {
+    "protocol": "sensorblue",
+    "name": "Avalanche Toit",
+    "address": "9D:88:00:00:02:2C",
+    "manufacturer_id": 16,
+    "data": "0000000000000000f00a5801200300000000",
+    "expected": {
+      "temperature": 21.5,
+      "humidity": 50.0,
+      "battery": 80
+    }
+  },
+  {
+    "protocol": "inkbird",
+    "name": "Fruit Storage",
+    "address": "49:22:11:08:18:64",
+    "manufacturer_id": 790,
+    "data": "00000000001800",
+    "gatt": "02030000",
+    "expected": {
+      "temperature": 7.7,
+      "battery": 24
+    }
+  },
+  {
+    "protocol": "inkbird",
+    "name": "Tête used",
+    "address": "49:22:09:05:14:A1",
+    "manufacturer_id": 0,
+    "data": "00000000e100f5015000000000000000",
+    "expected": {
+      "temperature": 22.5,
+      "humidity": 50.1,
+      "battery": 80
+    }
+  }
+]

@@ -1,0 +1,42 @@
+[
+  {
+    "address": "AA:BB:CC:DD:EE:01",
+    "name": "SmartSolar Pyleas",
+    "manufacturer_id": 737,
+    "data": "100256a0010100004471f212ef1d6df050bbbf2b",
+    "expected": {
+      "model_name": "SmartSolar Charger MPPT 100/30",
+      "battery_voltage": 12.58,
+      "solar_power": 9,
+      "charge_state": "bulk",
+      "battery_charging_current": 0.6,
+      "yield_today": 20
+    }
+  },
+  {
+    "address": "AA:BB:CC:DD:EE:02",
+    "name": "VE.Direct Pyleas",
+    "manufacturer_id": 737,
+    "data": "100221a203010000477118feed1d6ff859bbbf",
+    "expected": {
+      "model_name": "Phoenix Inverter 12V 500VA 230V",
+      "device_state": "off",
+      "ac_voltage": 0.08,
+      "ac_current": 0.0,
+      "ac_apparent_power": 0
+    }
+  },
+  {
+    "address": "AA:BB:CC:DD:EE:03",
+    "name": "BatteryProtec Pyleas",
+    "manufacturer_id": 737,
+    "data": "1002b0a309010000be701816e91d6f185d53bb2bf58e0f",
+    "expected": {
+      "model_name": "Smart BatteryProtect 12/24V-65A",
+      "input_voltage": 12.56,
+      "output_voltage": 12.56,
+      "output_state": "on",
+      "device_state": "active"
+    }
+  }
+]
