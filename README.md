@@ -40,6 +40,11 @@ cp bluetooth.env.example bluetooth.env
 chmod 600 bluetooth.env
 ```
 
+Le Dockerfile installe temporairement `gcc` et `libc6-dev` pour compiler les
+dépendances natives lorsqu'aucun paquet binaire n'est disponible sur Raspberry
+Pi (notamment `pycryptodome` et `dbus-fast`). Ces outils sont retirés après
+l'installation. La construction peut donc être plus longue sur ARM.
+
 **Arrêter d'abord les anciens collecteurs BLE.** La procédure complète, avec
 vérification et retour arrière, est dans [MIGRATION.md](MIGRATION.md).
 
