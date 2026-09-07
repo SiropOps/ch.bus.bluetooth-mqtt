@@ -176,3 +176,20 @@ distinguer un environnement entièrement silencieux d'un scanner arrêté et
 reprend alors périodiquement. Les alias Victron par modèle restent partagés si
 plusieurs appareils du même modèle existent, conformément au comportement
 historique. Les noms MQTT peuvent être figés avec `VICTRON_NAMES`.
+
+
+## Correction du build Raspberry Pi
+
+Le Dockerfile installe désormais `gcc` et `libc6-dev` avant pip, puis les retire
+après l'installation. Cela permet de compiler les dépendances natives lorsque
+leurs wheels ne sont pas disponibles sur la plateforme cible.
+
+Validation supplémentaire effectuée sous émulation Docker :
+
+- `linux/arm64` : construction réussie ;
+- `linux/arm/v7` (32 bits) : construction réussie, avec compilation effective de
+  `dbus-fast` et `pycryptodome` depuis leurs sources ;
+- dans chacune des deux images finales : import de `dbus_fast`, déchiffrement
+  des trois fixtures Victron et vérification de l'absence de `gcc` réussis.
+
+Les validations matérielles BlueZ/GPIO restent à réaliser sur le Raspberry Pi.
