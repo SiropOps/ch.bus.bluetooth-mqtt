@@ -1,7 +1,8 @@
 # ch.bus.bluetooth-mqtt
 
-Passerelle BLE vers MQTT pour Raspberry Pi. Ce service possède seul le contrôleur
-Bluetooth et la découverte BlueZ. Il ne fournit aucune API HTTP.
+Passerelle BLE vers MQTT pour Raspberry Pi. Ce service possède son scanner et
+ses connexions GATT ; BlueZ peut partager `hci0` avec le GPS ESP32 indépendant.
+Il ne fournit aucune API HTTP. Voir [le diagnostic et la fiabilisation](BLE_RELIABILITY.md).
 
 ```text
 BlueZ / hci0 -> un BleakScanner -> dispatcher
@@ -51,7 +52,7 @@ vérification et retour arrière, est dans [MIGRATION.md](MIGRATION.md).
 ```sh
 docker run -d --restart=always --name bluetooth-mqtt \
   --net=host --privileged \
-  --stop-timeout 45 \
+  --stop-timeout 120 \
   -v /var/run/dbus:/var/run/dbus \
   -v /run/bluetooth-mqtt:/run/bluetooth-mqtt \
   --env-file bluetooth.env \
@@ -60,7 +61,8 @@ docker run -d --restart=always --name bluetooth-mqtt \
 
 Le verrou partagé dans `/run/bluetooth-mqtt` empêche deux instances de cette
 passerelle de démarrer ensemble. Tous les lancements doivent partager ce même
-répertoire. Les collecteurs d'autres applications doivent être désactivés
+répertoire. Il ne verrouille pas le GPS et ne prouve aucun conflit avec lui.
+Les anciens collecteurs publiant les mêmes mesures doivent être désactivés
 séparément. BlueZ reste le service de l'hôte ; aucun démon BlueZ supplémentaire
 ni outil `bluetoothctl scan` n'est lancé dans le conteneur.
 
@@ -91,7 +93,10 @@ Ne pas transmettre les clés Victron aux API ni au conteneur DHT22.
 | `GATT_ATTEMPTS` | `2` | Tentatives par cycle, maximum 5 |
 | `BLE_CLEANUP_TIMEOUT_SECONDS` | `10` | Délai d'arrêt scanner / déconnexion GATT |
 | `SCANNER_OPERATION_TIMEOUT_SECONDS` | `20` | Délai de démarrage scanner |
-| `SCANNER_IDLE_TIMEOUT_SECONDS` | `120` | Reprise si aucune annonce ne parvient au scanner |
+| `SCANNER_IDLE_TIMEOUT_SECONDS` | `120` | Première reprise douce sur silence, sans preuve de panne |
+| `SCANNER_SILENCE_RETRY_MAX_SECONDS` | `1800` | Plafond de l'intervalle doublé après chaque reprise sans annonce |
+| `BLE_FAILURE_LIMIT` | `5` | Échecs de démarrage explicites avant sortie du processus |
+| `BLE_PROCESS_RESTART_DELAY_SECONDS` | `60` | Temporisation avant sortie pour échec BLE fatal |
 | `BLUETOOTH_RETRY_MAX_SECONDS` | `60` | Plafond du délai exponentiel après erreur |
 | `HEALTH_INTERVAL_SECONDS` | `30` | Période de publication de la santé |
 | `BLUETOOTH_OWNER_LOCK` | `/run/bluetooth-mqtt/owner.lock` | Verrou partagé entre instances |
@@ -167,17 +172,23 @@ ont répondu : consulter `health`, `availability` et les timestamps de mesure.
 ## Pannes et arrêt
 
 Une erreur de démarrage, DBus ou `InProgress` entraîne nettoyage puis reprise
-avec délai exponentiel plafonné. Le watchdog détecte également un arrêt silencieux
-par absence d'annonces. Un environnement radio totalement vide provoque donc
-une reprise périodique ; ajuster son délai si nécessaire.
+avec délai exponentiel plafonné, puis sortie après cinq échecs explicites.
+L'absence d'annonces déclenche des reprises douces espacées : 120, 240, 480,
+960 puis 1800 secondes. Le silence seul ne provoque jamais une sortie du
+processus. Seule une nouvelle annonce confirme le rétablissement radio.
 
 Si le démarrage expire sans réponse BlueZ, ou si l'arrêt du scanner ou la
 déconnexion GATT échoue, l'état Bluetooth est
-incertain. La passerelle quitte avec un code non nul ; la politique Docker la
+incertain. Après temporisation de 60 secondes, la passerelle quitte avec un code non nul ; la politique Docker la
 relance et la fin du processus ferme ses connexions DBus. Elle ne tente pas de
 créer un second scanner dans le même processus. Aucun redémarrage de BlueZ par
 `systemctl` n'est effectué. SIGTERM/SIGINT annulent l'opération courante, attendent
 le nettoyage et ferment MQTT.
+
+Un appel ignorant l'annulation dispose d'une grâce supplémentaire de deux
+secondes, puis impose la fin du processus après temporisation, sans attendre
+indéfiniment le drainage asyncio. L'arrêt Docker dispose de 120 secondes.
+Les logs sont UTC (`Z`) et les succès MQTT suivis dans `health` sont des PUBACK.
 
 MQTT reconnecte indépendamment du Bluetooth. Un tampon conserve la dernière
 valeur par topic (4096 topics maximum), avec une file Paho bornée à 1000 messages.

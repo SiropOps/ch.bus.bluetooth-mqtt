@@ -95,3 +95,30 @@ def test_shutdown_network_error_still_closes_socket_and_thread(caplog):
     transport.socket.return_value.close.assert_called_once()
     transport.loop_stop.assert_called_once()
     assert "private-password" not in caplog.text
+
+
+def test_publication_success_requires_broker_acknowledgement():
+    publisher = MqttPublisher(Config(), client())
+    publisher.connected = True
+    publisher.publish("van/test/value", "1")
+    assert publisher.health()["last_publish_success"] is None
+    publisher.on_publish(None, None, 1, SimpleNamespace(is_failure=False), None)
+    assert publisher.health()["last_publish_success"].endswith("+00:00")
+    assert publisher.health()["publish_age_seconds"] >= 0
+
+
+def test_ack_callback_never_waits_for_publishing_lock():
+    # Paho holds its own outgoing mutex during PUBACK. flush holds our lock
+    # while calling publish, which needs that Paho mutex. Avoid lock inversion.
+    import threading
+    publisher = MqttPublisher(Config(), client())
+    finished = threading.Event()
+    def acknowledge():
+        publisher.on_publish(None, None, 1, SimpleNamespace(is_failure=False), None)
+        finished.set()
+    with publisher.lock:
+        thread = threading.Thread(target=acknowledge)
+        thread.start()
+        completed_while_publishing = finished.wait(timeout=1)
+    thread.join(timeout=1)
+    assert completed_while_publishing

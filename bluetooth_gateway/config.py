@@ -128,6 +128,9 @@ class Config:
     gatt_attempts: int = 2
     scanner_timeout: float = 20
     scanner_idle: float = 120
+    silence_retry_max: float = 1800
+    failure_limit: int = 5
+    process_restart_delay: float = 60
     retry_max: float = 60
     health_interval: float = 30
     tick: float = 1
@@ -168,12 +171,15 @@ class Config:
             ("gatt_attempts", "GATT_ATTEMPTS", 2),
             ("scanner_timeout", "SCANNER_OPERATION_TIMEOUT_SECONDS", 20),
             ("scanner_idle", "SCANNER_IDLE_TIMEOUT_SECONDS", 120),
+            ("silence_retry_max", "SCANNER_SILENCE_RETRY_MAX_SECONDS", 1800),
+            ("failure_limit", "BLE_FAILURE_LIMIT", 5),
+            ("process_restart_delay", "BLE_PROCESS_RESTART_DELAY_SECONDS", 60),
             ("retry_max", "BLUETOOTH_RETRY_MAX_SECONDS", 60),
             ("health_interval", "HEALTH_INTERVAL_SECONDS", 30),
             ("mqtt_port", "MQTT_PORT", 1883),
         ):
             value = positive(source, env_name, default)
-            if name in {"missed_cycles", "gatt_attempts", "mqtt_port"}:
+            if name in {"missed_cycles", "gatt_attempts", "mqtt_port", "failure_limit"}:
                 if not value.is_integer():
                     raise ValueError(f"{env_name} must be an integer")
                 value = int(value)

@@ -11,13 +11,10 @@ from .config import Config
 from .publishing import publish_sensor, publish_victron, utc_now
 from .temperature import PARSERS, parse_inkbird_gatt
 from .victron import decode_victron
+from .runtime import BluetoothCleanupError, bounded
 
 logger = logging.getLogger(__name__)
 INKBIRD_CHARACTERISTIC = "0000fff2-0000-1000-8000-00805f9b34fb"
-
-
-class BluetoothCleanupError(RuntimeError):
-    """Ownership is uncertain: exit the process before acquiring Bluetooth again."""
 
 
 async def read_inkbird_gatt(device, values, config: Config, client_factory=BleakClient):
@@ -25,13 +22,14 @@ async def read_inkbird_gatt(device, values, config: Config, client_factory=Bleak
     # creating a discovery scanner to resolve a plain MAC address.
     client = client_factory(device, timeout=config.gatt_timeout)
     try:
-        await asyncio.wait_for(client.connect(), config.gatt_timeout)
-        data = await asyncio.wait_for(client.read_gatt_char(INKBIRD_CHARACTERISTIC), config.gatt_read_timeout)
+        await bounded(client.connect(), config.gatt_timeout, restart_delay=config.process_restart_delay)
+        data = await bounded(client.read_gatt_char(INKBIRD_CHARACTERISTIC), config.gatt_read_timeout,
+                             restart_delay=config.process_restart_delay)
         return parse_inkbird_gatt(bytes(data), values)
     finally:
         # Also disconnect if connect partially succeeded, timed out or was cancelled.
         try:
-            await asyncio.wait_for(client.disconnect(), config.cleanup_timeout)
+            await bounded(client.disconnect(), config.cleanup_timeout, restart_delay=config.process_restart_delay)
         except Exception:
             raise BluetoothCleanupError("GATT cleanup failed; process restart required") from None
 
@@ -44,12 +42,13 @@ class Gateway:
     """
 
     def __init__(self, config: Config, publisher, scanner_factory=BleakScanner,
-                 client_factory=BleakClient, monotonic=time.monotonic):
+                 client_factory=BleakClient, monotonic=time.monotonic, sleep=asyncio.sleep):
         self.config = config
         self.publisher = publisher
         self.scanner_factory = scanner_factory
         self.client_factory = client_factory
         self.monotonic = monotonic
+        self.sleep = sleep
         self.scanner = None
         self.scanner_state = "stopped"
         self.sensors = {sensor.address: sensor for sensor in config.sensors}
@@ -62,10 +61,20 @@ class Gateway:
         self.missed = {sensor.address: 0 for sensor in config.sensors}
         self.seen = set()
         self.last_advertisement = None
+        self.last_advertisement_at = None
         self.last_activity = monotonic()
         self.gatt_operations = 0
         self.scanner_restarts = 0
         self.errors_logged = {}
+        self.last_gatt_success = None
+        self.last_gatt_at = None
+        self.consecutive_failures = 0
+        self.gatt_failures = 0
+        self.silence_recoveries = 0
+        self.silence_interval = config.scanner_idle
+        self.recovery_pending = False
+        self.recovery_level = 0
+        self.retry_delay = min(1.0, config.retry_max)
 
     def warning(self, address, kind, exc):
         # Never interpolate exception text: third-party errors may echo inputs.
@@ -76,7 +85,16 @@ class Gateway:
             self.errors_logged[key] = now
 
     def on_advertisement(self, device, advertisement):
+        if self.recovery_pending:
+            logger.info("BLE recovery confirmed by advertisement; recovery_level=0")
+        self.recovery_pending = False
+        self.recovery_level = 0
+        self.consecutive_failures = 0
+        self.silence_recoveries = 0
+        self.silence_interval = self.config.scanner_idle
+        self.retry_delay = min(1.0, self.config.retry_max)
         self.last_activity = self.monotonic()
+        self.last_advertisement_at = self.last_activity
         self.last_advertisement = utc_now()
         address = device.address.upper()
         sensor = self.sensors.get(address)
@@ -122,12 +140,14 @@ class Gateway:
             bluez={"adapter": self.config.adapter, "filters": {"DuplicateData": True}},
         )
         try:
-            await asyncio.wait_for(self.scanner.start(), self.config.scanner_timeout)
+            await bounded(self.scanner.start(), self.config.scanner_timeout,
+                          restart_delay=self.config.process_restart_delay)
         except TimeoutError:
             # BlueZ may have accepted StartDiscovery before its reply timed out.
             # Bleak has no stop handle yet in that case; scanner.stop() is a no-op.
             # Exit so DBus releases our lease instead of starting another scanner.
             self.scanner_state = "cleanup_failed"
+            self.recovery_level = 2
             raise BluetoothCleanupError("Scanner start timed out with uncertain ownership") from None
         self.last_activity = self.monotonic()
         self.scanner_state = "running"
@@ -138,12 +158,14 @@ class Gateway:
             return
         self.scanner_state = "stopping"
         try:
-            await asyncio.wait_for(self.scanner.stop(), self.config.cleanup_timeout)
+            await bounded(self.scanner.stop(), self.config.cleanup_timeout,
+                          restart_delay=self.config.process_restart_delay)
         except Exception:
             # Bleak clears its stop callback before awaiting StopDiscovery.
             # Retrying stop on that object could appear to succeed without
             # releasing discovery. Do not create another scanner in this process.
             self.scanner_state = "cleanup_failed"
+            self.recovery_level = 2
             raise BluetoothCleanupError("Scanner cleanup failed; process restart required") from None
         self.scanner = None
         self.scanner_state = "stopped"
@@ -198,39 +220,53 @@ class Gateway:
             try:
                 current = await read_inkbird_gatt(device, values, self.config, self.client_factory)
                 if current is not None:
+                    self.last_gatt_success = utc_now()
+                    self.last_gatt_at = self.monotonic()
+                    self.gatt_failures = 0
                     current["timestamp"] = utc_now()
                     logger.info("GATT read completed: %s", sensor.identifier)
                     return current
             except BluetoothCleanupError:
                 self.scanner_state = "cleanup_failed"
+                self.recovery_level = 2
                 raise
             except Exception as exc:
+                self.gatt_failures += 1
                 self.warning(sensor.address, "GATT read failed", exc)
             finally:
                 self.gatt_operations = 0
             if attempt + 1 < self.config.gatt_attempts:
-                await asyncio.sleep(min(2 ** attempt, self.config.retry_max))
+                await self.sleep(min(2 ** attempt, self.config.retry_max))
         return None
 
     def publish_health(self):
-        self.publisher.publish(self.config.health_topic, json.dumps({
+        now = self.monotonic()
+        health = {
             "timestamp": utc_now(), "scanner": self.scanner_state,
             "adapter": self.config.adapter, "devices_seen": len(self.seen),
             "last_advertisement": self.last_advertisement,
             "gatt_operations": self.gatt_operations, "scanner_restarts": self.scanner_restarts,
-        }))
+            "advertisement_age_seconds": None if self.last_advertisement_at is None else now - self.last_advertisement_at,
+            "last_gatt_success": self.last_gatt_success,
+            "gatt_age_seconds": None if self.last_gatt_at is None else now - self.last_gatt_at,
+            "consecutive_failures": self.consecutive_failures, "gatt_failures": self.gatt_failures,
+            "silence_recoveries": self.silence_recoveries,
+            "radio_state": "silent_or_unverified" if self.recovery_pending else "observed" if self.last_advertisement else "unverified",
+            "recovery_level": self.recovery_level,
+            "mqtt": self.publisher.health() if hasattr(self.publisher, "health") else {},
+        }
+        self.publisher.publish(self.config.health_topic, json.dumps(health))
+        logger.info("BLE health %s", json.dumps(health))
 
     async def run(self):
         next_temperature = self.monotonic() + self.config.initial_scan
         next_health = retry_at = 0.0
-        retry_delay = min(1.0, self.config.retry_max)
         try:
             while True:
                 now = self.monotonic()
                 if self.scanner is None and now >= retry_at:
                     try:
                         await self.start_scanner()
-                        retry_delay = min(1.0, self.config.retry_max)
                     except BluetoothCleanupError:
                         raise
                     except Exception as exc:
@@ -238,15 +274,26 @@ class Gateway:
                         await self.stop_scanner()
                         self.scanner_state = "retrying"
                         self.scanner_restarts += 1
-                        retry_at = self.monotonic() + retry_delay
-                        retry_delay = min(retry_delay * 2, self.config.retry_max)
-                elif self.scanner is not None and now - self.last_activity >= self.config.scanner_idle:
-                    logger.warning("BLE scanner watchdog expired; restarting discovery")
+                        self.consecutive_failures += 1
+                        self.recovery_level = 1
+                        self.recovery_pending = True
+                        if self.consecutive_failures >= self.config.failure_limit:
+                            self.recovery_level = 2
+                            raise BluetoothCleanupError("Repeated scanner failures; process restart required")
+                        retry_at = self.monotonic() + self.retry_delay
+                        self.retry_delay = min(self.retry_delay * 2, self.config.retry_max)
+                elif self.scanner is not None and now - self.last_activity >= self.silence_interval:
+                    logger.warning("BLE radio silent; recovery_level=1 restarting discovery (not proof of failure)")
                     await self.stop_scanner()
+                    self.silence_recoveries += 1
+                    self.silence_interval = min(self.silence_interval * 2,
+                                               max(self.config.scanner_idle, self.config.silence_retry_max))
+                    self.recovery_pending = True
+                    self.recovery_level = 1
                     self.scanner_state = "retrying"
                     self.scanner_restarts += 1
-                    retry_at = self.monotonic() + retry_delay
-                    retry_delay = min(retry_delay * 2, self.config.retry_max)
+                    retry_at = self.monotonic() + self.retry_delay
+                    self.retry_delay = min(self.retry_delay * 2, self.config.retry_max)
                 self.publish_victron_ready()
                 if self.monotonic() >= next_temperature:
                     await self.temperature_cycle()
@@ -255,7 +302,7 @@ class Gateway:
                     self.publish_health()
                     next_health = self.monotonic() + self.config.health_interval
                 self.publisher.flush()
-                await asyncio.sleep(self.config.tick)
+                await self.sleep(self.config.tick)
         finally:
             # No background scanner or per-advertisement tasks to abandon.
             if self.scanner_state != "cleanup_failed":

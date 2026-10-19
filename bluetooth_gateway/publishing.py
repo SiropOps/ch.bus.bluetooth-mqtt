@@ -4,6 +4,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from datetime import datetime, timezone
 
 import paho.mqtt.client as mqtt
@@ -64,11 +65,18 @@ class MqttPublisher:
         self.config = config
         self.client = client or mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="bluetooth-mqtt")
         self.lock = threading.RLock()
+        # Paho invokes on_publish while holding its outgoing-message mutex.
+        # Never acquire our publishing lock there (flush takes locks in reverse order).
+        self.ack_lock = threading.Lock()
         self.latest: dict[str, str] = {}
         self.pending: dict[str, str] = {}
         self.connected = False
         self.closing = False
         self.max_topics = max_topics
+        self.last_publish_success = None
+        self.last_publish_at = None
+        self.publish_failures = 0
+        self.client.on_publish = self.on_publish
         self.client.on_connect = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.will_set(config.status_topic, "offline", qos=1, retain=True)
@@ -104,6 +112,22 @@ class MqttPublisher:
         if not self.closing:
             logger.warning("MQTT disconnected; retaining latest readings for reconnect")
 
+    def on_publish(self, client, userdata, mid, reason_code, properties):
+        with self.ack_lock:
+            if reason_code.is_failure:
+                self.publish_failures += 1
+                return
+            self.last_publish_success = utc_now()
+            self.last_publish_at = time.monotonic()
+            self.publish_failures = 0
+
+    def health(self):
+        with self.lock, self.ack_lock:
+            return {"connected": self.connected, "pending_topics": len(self.pending),
+                    "last_publish_success": self.last_publish_success,
+                    "publish_age_seconds": None if self.last_publish_at is None else time.monotonic() - self.last_publish_at,
+                    "consecutive_failures": self.publish_failures}
+
     def publish(self, topic: str, payload: str):
         with self.lock:
             if topic not in self.latest and len(self.latest) >= self.max_topics:
@@ -121,10 +145,14 @@ class MqttPublisher:
                 try:
                     info = self.client.publish(topic, payload, qos=1, retain=True)
                 except (OSError, RuntimeError, ValueError):
+                    with self.ack_lock:
+                        self.publish_failures += 1
                     self.connected = False
                     logger.warning("MQTT publication deferred")
                     return
                 if info.rc != mqtt.MQTT_ERR_SUCCESS:
+                    with self.ack_lock:
+                        self.publish_failures += 1
                     return
                 del self.pending[topic]
 

@@ -3,6 +3,7 @@ import logging
 import os
 import signal
 import sys
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -31,7 +32,15 @@ def owner_lock():
 
 async def run_service(config, publisher):
     loop = asyncio.get_running_loop()
-    task = asyncio.create_task(Gateway(config, publisher).run())
+    async def supervised():
+        try:
+            await Gateway(config, publisher).run()
+        except Exception as exc:
+            logger.error("BLE recovery_level=2 failure=%s; process exit after %s seconds",
+                         type(exc).__name__, config.process_restart_delay)
+            await asyncio.sleep(config.process_restart_delay)
+            raise
+    task = asyncio.create_task(supervised())
     previous = {}
     stopping = False
 
@@ -54,7 +63,8 @@ async def run_service(config, publisher):
 
 
 def main():
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    logging.Formatter.converter = time.gmtime
+    logging.basicConfig(level=logging.INFO, format="%(asctime)sZ %(levelname)s %(message)s")
     try:
         config = Config.from_env()
         with owner_lock():

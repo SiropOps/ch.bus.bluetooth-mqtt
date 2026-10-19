@@ -1,5 +1,11 @@
 # Migration Raspberry Pi
 
+> Cette procédure décrit la migration historique des anciens collecteurs.
+> Pour mettre à jour la passerelle actuelle et le GPS ESP32 ensemble, suivre
+> [BLE_RELIABILITY.md](BLE_RELIABILITY.md). Le partage BlueZ n'établit pas à lui
+> seul un conflit. Les états « seul propriétaire » ci-dessous concernent les
+> anciens collecteurs de mêmes mesures, et ne doivent pas exclure le GPS.
+
 Exécuter ces commandes sur le Raspberry Pi, avec les trois dépôts côte à côte.
 Les exemples partent de la racine de `ch.bus.bluetooth-mqtt`. Adapter les noms
 si les conteneurs existants portent d'autres noms. Aucun déploiement Raspberry
@@ -184,7 +190,9 @@ docker start temperature-mqtt-pre-bluetooth
 # température avant de démarrer victron-ble-pre-bluetooth.
 ```
 
-Le retour aux deux anciens collecteurs simultanément réintroduit le conflit
-BlueZ initial. Ne les utiliser que séparément pendant le diagnostic. Restaurer
+Le retour aux deux anciens collecteurs simultanément réintroduit leurs
+cycles de découverte indépendants et leurs éventuelles publications en double ;
+aucun lien causal avec l'incident du 5 octobre n'est établi. Les utiliser
+séparément facilite le diagnostic comparatif. Restaurer
 les anciennes API si nécessaire et rétablir la politique de redémarrage choisie
 uniquement pour les conteneurs conservés.
