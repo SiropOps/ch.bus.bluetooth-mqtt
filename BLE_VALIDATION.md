@@ -1,5 +1,12 @@
 # Validation des corrections BLE — 19 octobre 2026
 
+**Vérification finale complémentaire :** voir
+[BLE_FINAL_VALIDATION.md](BLE_FINAL_VALIDATION.md). Elle porte le total à
+**129 tests réussis sous Linux** (78 passerelle, 51 GPS), dont 36 cas
+supplémentaires, et corrige l'absence d'échéance d'attente des confirmations
+AMQP malgré des heartbeats actifs. Les résultats ci-dessous conservent la
+trace de la première phase et de ses 93 tests.
+
 Travail local uniquement, sur `codex/ble-reliability` dans les deux dépôts.
 Aucun accès à `hiva-oa`, aucun déploiement/push, aucun changement firmware/OS,
 aucun vrai secret utilisé dans les tests ou ajouté aux fichiers.

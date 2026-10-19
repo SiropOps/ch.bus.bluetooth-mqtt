@@ -188,6 +188,9 @@ les données brutes. Les erreurs sont journalisées par type, jamais par contenu
 Un thread unique possède les objets Pika ; les callbacks BLE n'effectuent plus
 de réseau. Sa file mémoire conserve au maximum 128 messages, abandonne les plus
 anciens en saturation et conserve un message non acquitté pour le réessayer.
+La vérification finale a ajouté une échéance AMQP de 10 s : les heartbeats
+seuls ne bornent pas l'attente d'une confirmation. Les résultats actualisés
+et les limites de coexistence sont dans [BLE_FINAL_VALIDATION.md](BLE_FINAL_VALIDATION.md).
 Une reconnexion peut donc produire un doublon (acquittement perdu) et une panne
 longue ou un redémarrage peut perdre des messages : aucun historique durable ni
 exactly-once n'est promis. Les modes de livraison historiques ne sont pas changés
